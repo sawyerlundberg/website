@@ -180,7 +180,7 @@ export default function Spreadsheet() {
           height: dims.height,
           paddingLeft: 6,
           paddingRight: 6,
-          whiteSpace: "nowrap",
+          whiteSpace: data.width ? "normal" : "nowrap",
         }}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}

@@ -1,8 +1,10 @@
 export interface CellData {
   content: string;
   className?: string;
+  /** Number of grid columns this cell spans. Mutually exclusive with `width`. */
   colSpan?: number;
   rowSpan?: number;
+  /** Explicit pixel width. Mutually exclusive with `colSpan`. */
   width?: number;
   html?: boolean;
 }
@@ -34,7 +36,7 @@ export const CELLS: Record<string, CellData> = {
   },
   "6,1": {
     content:
-      'Today, July 29, 2026 the website, <a href="https://sawyerlundberg.com" class="text-[#1a73e8] underline">sawyerlundberg.com</a>, is now live. How exciting! I hope this can be a place where I can showcase my work and life in the purest form.',
+      'Today, July 29, 2026 the website, <a href="https://sawyerlundberg.com" class="text-[#1a73e8] underline" aria-label="Visit sawyerlundberg.com">sawyerlundberg.com</a>, is now live. How exciting! I hope this can be a place where I can showcase my work and life in the purest form.',
     className: "text-[13px] text-[#333] tracking-normal",
     width: 850,
     html: true,
@@ -72,24 +74,25 @@ export function getCellPixelPosition(row: number, col: number) {
   };
 }
 
+function calculateCellWidth(cell: CellData | undefined, isTitle: boolean): number {
+  if (cell?.width) return cell.width;
+  if (cell?.colSpan) return CELL_WIDTH * cell.colSpan;
+  if (isTitle) return CELL_WIDTH * TITLE_COL_SPAN;
+  return CELL_WIDTH;
+}
+
+function calculateCellHeight(row: number, rowSpan: number): number {
+  const baseHeight = row === 1 ? TITLE_ROW_HEIGHT : CELL_HEIGHT;
+  return baseHeight + (rowSpan - 1) * CELL_HEIGHT;
+}
+
 // Get cell dimensions
 export function getCellDimensions(row: number, col?: number) {
   const key = col !== undefined ? cellKey(row, col) : undefined;
   const cell = key ? CELLS[key] : undefined;
-  const colSpan = cell?.colSpan;
-  const rowSpan = cell?.rowSpan ?? 1;
-  const explicitWidth = cell?.width;
 
-  const isTitle = row === 1;
-  const baseHeight = isTitle ? TITLE_ROW_HEIGHT : CELL_HEIGHT;
   return {
-    width: explicitWidth
-      ? explicitWidth
-      : colSpan
-        ? CELL_WIDTH * colSpan
-        : isTitle
-          ? CELL_WIDTH * TITLE_COL_SPAN
-          : CELL_WIDTH,
-    height: baseHeight + (rowSpan - 1) * CELL_HEIGHT,
+    width: calculateCellWidth(cell, row === 1),
+    height: calculateCellHeight(row, cell?.rowSpan ?? 1),
   };
 }
