@@ -34,7 +34,7 @@ export default function Spreadsheet() {
 
   // Cursor position springs
   const cursorPixel = getCellPixelPosition(cursor.row, cursor.col);
-  const cursorDims = getCellDimensions(cursor.row);
+  const cursorDims = getCellDimensions(cursor.row, cursor.col);
   const cursorX = useSpring(cursorPixel.x + GRID_PADDING_X, springConfig);
   const cursorY = useSpring(cursorPixel.y + GRID_PADDING_Y, springConfig);
   const cursorW = useSpring(cursorDims.width, springConfig);
@@ -61,7 +61,7 @@ export default function Spreadsheet() {
   // Update cursor spring targets when cursor moves
   useEffect(() => {
     const pos = getCellPixelPosition(cursor.row, cursor.col);
-    const dims = getCellDimensions(cursor.row);
+    const dims = getCellDimensions(cursor.row, cursor.col);
     cursorX.set(pos.x + GRID_PADDING_X);
     cursorY.set(pos.y + GRID_PADDING_Y);
     cursorW.set(dims.width);
@@ -73,7 +73,7 @@ export default function Spreadsheet() {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const pos = getCellPixelPosition(cursor.row, cursor.col);
-    const dims = getCellDimensions(cursor.row);
+    const dims = getCellDimensions(cursor.row, cursor.col);
     const cellRight = pos.x + GRID_PADDING_X + dims.width;
     const cellBottom = pos.y + GRID_PADDING_Y + dims.height;
     const cellLeft = pos.x + GRID_PADDING_X;
@@ -167,12 +167,12 @@ export default function Spreadsheet() {
   const contentCells = Object.entries(CELLS).map(([key, data]) => {
     const [row, col] = key.split(",").map(Number);
     const pos = getCellPixelPosition(row, col);
-    const dims = getCellDimensions(row);
+    const dims = getCellDimensions(row, col);
 
     return (
       <motion.div
         key={key}
-        className="absolute flex items-center whitespace-nowrap"
+        className="absolute flex items-center"
         style={{
           left: pos.x + GRID_PADDING_X,
           top: pos.y + GRID_PADDING_Y,
@@ -180,12 +180,20 @@ export default function Spreadsheet() {
           height: dims.height,
           paddingLeft: 6,
           paddingRight: 6,
+          whiteSpace: data.colSpan && data.colSpan > 2 ? "normal" : "nowrap",
         }}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.8, delay: 0.3 }}
       >
-        <span className={data.className}>{data.content}</span>
+        {data.html ? (
+          <span
+            className={data.className}
+            dangerouslySetInnerHTML={{ __html: data.content }}
+          />
+        ) : (
+          <span className={data.className}>{data.content}</span>
+        )}
       </motion.div>
     );
   });
@@ -193,7 +201,7 @@ export default function Spreadsheet() {
   return (
     <div
       ref={containerRef}
-      className="fixed inset-0 overflow-hidden"
+      className="fixed inset-0 overflow-hidden bg-white"
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
       tabIndex={0}
@@ -206,7 +214,7 @@ export default function Spreadsheet() {
       >
         {/* Thin divider line below the title */}
         <motion.div
-          className="absolute bg-foreground/10"
+          className="absolute bg-black/10"
           style={{
             left: GRID_PADDING_X + 4,
             top: dividerY + GRID_PADDING_Y,
@@ -241,23 +249,19 @@ export default function Spreadsheet() {
               <div
                 className="absolute inset-0 rounded-[1px]"
                 style={{
-                  border: "2px solid rgb(var(--selection-color))",
-                  boxShadow: "0 0 0 1px rgba(var(--selection-color), 0.1)",
+                  border: "2px solid rgb(26, 115, 232)",
+                  boxShadow: "0 0 0 1px rgba(26, 115, 232, 0.1)",
                 }}
               />
               {/* Corner handle (bottom-right) */}
               <div
                 className="absolute -bottom-[3px] -right-[3px] w-[6px] h-[6px] rounded-[1px]"
-                style={{
-                  backgroundColor: "rgb(var(--selection-color))",
-                }}
+                style={{ backgroundColor: "rgb(26, 115, 232)" }}
               />
               {/* Subtle fill */}
               <div
                 className="absolute inset-0"
-                style={{
-                  backgroundColor: "rgba(var(--selection-color), 0.04)",
-                }}
+                style={{ backgroundColor: "rgba(26, 115, 232, 0.04)" }}
               />
             </motion.div>
           )}
@@ -281,22 +285,22 @@ export default function Spreadsheet() {
       <AnimatePresence>
         {introComplete && (
           <motion.div
-            className="fixed bottom-8 left-1/2 -translate-x-1/2 hidden md:flex items-center gap-1.5 text-[11px] text-foreground/25 tracking-wide"
+            className="fixed bottom-8 left-1/2 -translate-x-1/2 hidden md:flex items-center gap-1.5 text-[11px] text-black/25 tracking-wide"
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.6, delay: 0.5 }}
           >
-            <kbd className="px-1.5 py-0.5 rounded border border-foreground/10 text-[10px]">
+            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
               ↑
             </kbd>
-            <kbd className="px-1.5 py-0.5 rounded border border-foreground/10 text-[10px]">
+            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
               ↓
             </kbd>
-            <kbd className="px-1.5 py-0.5 rounded border border-foreground/10 text-[10px]">
+            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
               ←
             </kbd>
-            <kbd className="px-1.5 py-0.5 rounded border border-foreground/10 text-[10px]">
+            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
               →
             </kbd>
             <span className="ml-1">to navigate</span>
@@ -309,7 +313,7 @@ export default function Spreadsheet() {
 
 function MobileControls({ onMove }: { onMove: (dr: number, dc: number) => void }) {
   const btnClass =
-    "w-10 h-10 flex items-center justify-center rounded-lg bg-foreground/5 active:bg-foreground/10 text-foreground/40 text-sm transition-colors";
+    "w-10 h-10 flex items-center justify-center rounded-lg bg-black/5 active:bg-black/10 text-black/40 text-sm transition-colors";
 
   return (
     <div className="grid grid-cols-3 gap-1">

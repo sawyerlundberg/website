@@ -1,6 +1,8 @@
 export interface CellData {
   content: string;
   className?: string;
+  colSpan?: number;
+  html?: boolean;
 }
 
 export interface CellPosition {
@@ -22,10 +24,18 @@ export const CELLS: Record<string, CellData> = {
   "1,1": {
     content: "Sawyer Lundberg",
     className: "text-[32px] font-medium tracking-tight leading-none",
+    colSpan: TITLE_COL_SPAN,
   },
   "3,1": {
     content: "Jul 29, 2026",
-    className: "text-[13px] text-foreground/60 tracking-normal",
+    className: "text-[13px] text-[#666] tracking-normal",
+  },
+  "6,1": {
+    content:
+      'Today, July 29, 2026 the website, <a href="https://sawyerlundberg.com" class="text-[#1a73e8] underline">sawyerlundberg.com</a>, is now live. How exciting! I hope this can be a place where I can showcase my work and life in the purest form.',
+    className: "text-[13px] text-[#333] tracking-normal leading-[1.6]",
+    colSpan: 8,
+    html: true,
   },
 };
 
@@ -60,11 +70,19 @@ export function getCellPixelPosition(row: number, col: number) {
   };
 }
 
-// Get cell dimensions (title cell is wider and taller)
-export function getCellDimensions(row: number) {
+// Get cell dimensions
+export function getCellDimensions(row: number, col?: number) {
+  const key = col !== undefined ? cellKey(row, col) : undefined;
+  const cell = key ? CELLS[key] : undefined;
+  const colSpan = cell?.colSpan;
+
   const isTitle = row === 1;
   return {
-    width: isTitle ? CELL_WIDTH * TITLE_COL_SPAN : CELL_WIDTH,
+    width: colSpan
+      ? CELL_WIDTH * colSpan
+      : isTitle
+        ? CELL_WIDTH * TITLE_COL_SPAN
+        : CELL_WIDTH,
     height: isTitle ? TITLE_ROW_HEIGHT : CELL_HEIGHT,
   };
 }
