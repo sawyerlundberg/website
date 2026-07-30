@@ -34,9 +34,8 @@ export const CELLS: Record<string, CellData> = {
   "6,1": {
     content:
       'Today, July 29, 2026 the website, <a href="https://sawyerlundberg.com" class="text-[#1a73e8] underline">sawyerlundberg.com</a>, is now live. How exciting! I hope this can be a place where I can showcase my work and life in the purest form.',
-    className: "text-[13px] text-[#333] tracking-normal leading-[1.6]",
-    colSpan: 10,
-    rowSpan: 2,
+    className: "text-[13px] text-[#333] tracking-normal",
+    colSpan: 80,
     html: true,
   },
 };
