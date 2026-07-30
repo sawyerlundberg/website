@@ -1,135 +1,219 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { motion, useMotionValue, useSpring, AnimatePresence } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CELLS,
+  CELL_HEIGHT,
+  CELL_PADDING_X,
   CELL_WIDTH,
+  COL_HEADER_HEIGHT,
   INITIAL_POSITION,
   INTRO_TARGET,
-  TITLE_COL_SPAN,
-  TITLE_ROW_HEIGHT,
+  ROW_HEADER_WIDTH,
+  type CellPosition,
+  cellKey,
+  cellLabel,
+  columnLabel,
   getCellDimensions,
   getCellPixelPosition,
+  getCellSpan,
+  getGridOrigin,
+  moveCursor,
 } from "@/lib/grid";
 
-// Grid origin offset — where row 0, col 0 sits on screen
-const GRID_PADDING_X = 80;
-const GRID_PADDING_Y = 80;
+/** Selection blue, matching a spreadsheet's active-cell chrome. */
+const ACCENT = "#1a73e8";
 
-// Spring config for cursor movement — snappy but smooth
-const springConfig = { stiffness: 500, damping: 38, mass: 0.8 };
+/** Everything that moves shares one easing so the grid stays locked together. */
+const EASING = "cubic-bezier(0.2, 0, 0, 1)";
+const DURATION = 90;
+
+/** Breathing room kept between the cursor and the viewport edge when panning. */
+const EDGE_MARGIN = 40;
+
+/** Header labels rendered per axis — enough to cover a 4K display. */
+const HEADER_COLS = 33;
+const HEADER_ROWS = 78;
+
+/** The cursor drifts to a second cell shortly after load, unless you move first. */
+const INTRO_MOVE_DELAY = 1400;
+
+const KEY_MOVES: Record<string, [number, number]> = {
+  ArrowUp: [-1, 0],
+  ArrowDown: [1, 0],
+  ArrowLeft: [0, -1],
+  ArrowRight: [0, 1],
+};
+
+interface Size {
+  width: number;
+  height: number;
+}
+
+interface Offset {
+  x: number;
+  y: number;
+}
+
+/** Cursor and pan move together, so they live in one piece of state. */
+interface View {
+  cursor: CellPosition;
+  pan: Offset;
+}
+
+/**
+ * Pan one axis just far enough to keep the selection on screen. Expressed as
+ * bounds rather than sequential overwrites so the result stays sane when a
+ * cell is wider than the viewport: revealing the far edge never wins over
+ * keeping the near edge visible, and nothing ever scrolls past the origin.
+ */
+function clampAxis(
+  pan: number,
+  cellStart: number,
+  cellSize: number,
+  viewSize: number,
+  origin: number
+): number {
+  const toRevealFarEdge = viewSize - EDGE_MARGIN - cellStart - cellSize;
+  const toKeepNearEdge = origin - cellStart;
+
+  let next = pan;
+  if (next > toRevealFarEdge) next = toRevealFarEdge;
+  if (next < toKeepNearEdge) next = toKeepNearEdge;
+
+  // Never past the origin, and whole pixels only — fractions blur hairlines.
+  return Math.round(Math.min(0, next));
+}
+
+/** The pan that brings `cursor` into view, or the current one if it already is. */
+function settlePan(cursor: CellPosition, pan: Offset, viewport: Size | null): Offset {
+  if (!viewport) return pan;
+
+  const origin = getGridOrigin(viewport.width);
+  const { x, y } = getCellPixelPosition(cursor.row, cursor.col);
+  const { width, height } = getCellDimensions(cursor.row, cursor.col);
+
+  const nextX = clampAxis(pan.x, origin.x + x, width, viewport.width, origin.x);
+  const nextY = clampAxis(pan.y, origin.y + y, height, viewport.height, origin.y);
+
+  return nextX === pan.x && nextY === pan.y ? pan : { x: nextX, y: nextY };
+}
+
+/** Cells sit at their anchor and fill their merged range. */
+function renderContentCells(origin: Offset) {
+  return Object.entries(CELLS).map(([key, data]) => {
+    const [row, col] = key.split(",").map(Number);
+    const { x, y } = getCellPixelPosition(row, col);
+    const { width, height } = getCellDimensions(row, col);
+
+    return (
+      <div
+        key={key}
+        className="fade-in absolute flex items-center"
+        style={{
+          left: origin.x + x,
+          top: origin.y + y,
+          width,
+          height,
+          paddingLeft: CELL_PADDING_X,
+          paddingRight: CELL_PADDING_X,
+          whiteSpace: data.wrap ? "normal" : "nowrap",
+          animationDelay: "300ms",
+        }}
+      >
+        <span className={data.className}>{data.content}</span>
+      </div>
+    );
+  });
+}
 
 export default function Spreadsheet() {
-  const [cursor, setCursor] = useState(INITIAL_POSITION);
-  const [introComplete, setIntroComplete] = useState(false);
-  const [showCursor, setShowCursor] = useState(false);
+  const [{ cursor, pan }, setView] = useState<View>({
+    cursor: INITIAL_POSITION,
+    pan: { x: 0, y: 0 },
+  });
+  const [viewport, setViewport] = useState<Size | null>(null);
+
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<Size | null>(null);
+  const userMoved = useRef(false);
 
-  // Track the viewport offset (panning)
-  const panX = useMotionValue(0);
-  const panY = useMotionValue(0);
-  const smoothPanX = useSpring(panX, { stiffness: 300, damping: 35, mass: 0.6 });
-  const smoothPanY = useSpring(panY, { stiffness: 300, damping: 35, mass: 0.6 });
+  const origin = getGridOrigin(viewport?.width ?? Infinity);
 
-  // Cursor position springs
-  const cursorPixel = getCellPixelPosition(cursor.row, cursor.col);
-  const cursorDims = getCellDimensions(cursor.row, cursor.col);
-  const cursorX = useSpring(cursorPixel.x + GRID_PADDING_X, springConfig);
-  const cursorY = useSpring(cursorPixel.y + GRID_PADDING_Y, springConfig);
-  const cursorW = useSpring(cursorDims.width, springConfig);
-  const cursorH = useSpring(cursorDims.height, springConfig);
+  // Until the first measurement lands the origin is a guess. Correct it without
+  // animating, so the grid never visibly slides into place on load.
+  const glide = (property: string) =>
+    viewport ? `${property} ${DURATION}ms ${EASING}` : "none";
 
-  // Divider line position
-  const dividerRow1Pos = getCellPixelPosition(1, 1);
-  const dividerY = dividerRow1Pos.y + TITLE_ROW_HEIGHT;
-
-  // Intro animation sequence
-  useEffect(() => {
-    const showTimer = setTimeout(() => setShowCursor(true), 200);
-    const moveTimer = setTimeout(() => {
-      setCursor(INTRO_TARGET);
-      setIntroComplete(true);
-    }, 1400);
-
-    return () => {
-      clearTimeout(showTimer);
-      clearTimeout(moveTimer);
-    };
+  /** Move the selection and settle the viewport around it in one update. */
+  const select = useCallback((next: (from: CellPosition) => CellPosition) => {
+    setView((prev) => {
+      const cursor = next(prev.cursor);
+      if (cursor === prev.cursor) return prev;
+      return { cursor, pan: settlePan(cursor, prev.pan, viewportRef.current) };
+    });
   }, []);
 
-  // Update cursor spring targets when cursor moves
-  useEffect(() => {
-    const pos = getCellPixelPosition(cursor.row, cursor.col);
-    const dims = getCellDimensions(cursor.row, cursor.col);
-    cursorX.set(pos.x + GRID_PADDING_X);
-    cursorY.set(pos.y + GRID_PADDING_Y);
-    cursorW.set(dims.width);
-    cursorH.set(dims.height);
-  }, [cursor, cursorX, cursorY, cursorW, cursorH]);
-
-  // Keep cursor in viewport by panning
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const pos = getCellPixelPosition(cursor.row, cursor.col);
-    const dims = getCellDimensions(cursor.row, cursor.col);
-    const cellRight = pos.x + GRID_PADDING_X + dims.width;
-    const cellBottom = pos.y + GRID_PADDING_Y + dims.height;
-    const cellLeft = pos.x + GRID_PADDING_X;
-    const cellTop = pos.y + GRID_PADDING_Y;
-
-    let newPanX = panX.get();
-    let newPanY = panY.get();
-    const margin = 40;
-
-    if (cellRight + newPanX > rect.width - margin) {
-      newPanX = rect.width - margin - cellRight;
-    }
-    if (cellLeft + newPanX < margin) {
-      newPanX = margin - cellLeft;
-    }
-    if (cellBottom + newPanY > rect.height - margin) {
-      newPanY = rect.height - margin - cellBottom;
-    }
-    if (cellTop + newPanY < margin) {
-      newPanY = margin - cellTop;
-    }
-
-    panX.set(newPanX);
-    panY.set(newPanY);
-  }, [cursor, panX, panY]);
-
-  // Keyboard navigation
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (!introComplete) return;
-
-      const moves: Record<string, [number, number]> = {
-        ArrowUp: [-1, 0],
-        ArrowDown: [1, 0],
-        ArrowLeft: [0, -1],
-        ArrowRight: [0, 1],
-      };
-
-      const move = moves[e.key];
-      if (!move) return;
-
-      e.preventDefault();
-      setCursor((prev) => ({
-        row: Math.max(0, prev.row + move[0]),
-        col: Math.max(0, prev.col + move[1]),
-      }));
+  const move = useCallback(
+    (dRow: number, dCol: number) => {
+      userMoved.current = true;
+      select((from) => moveCursor(from, dRow, dCol));
     },
-    [introComplete]
+    [select]
   );
 
+  // Scripted intro move, abandoned the moment the visitor takes over.
   useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!userMoved.current) select(() => INTRO_TARGET);
+    }, INTRO_MOVE_DELAY);
+
+    return () => clearTimeout(timer);
+  }, [select]);
+
+  // Measure the container rather than the window, and only ever with a real
+  // laid-out size — clamping against a 0x0 rect would strand the pan off-grid.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width <= 0 || height <= 0) return;
+
+      const size = { width, height };
+      viewportRef.current = size;
+      setViewport(size);
+      setView((prev) => {
+        const pan = settlePan(prev.cursor, prev.pan, size);
+        return pan === prev.pan ? prev : { ...prev, pan };
+      });
+    });
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const arrow = KEY_MOVES[e.key];
+      if (arrow) {
+        e.preventDefault();
+        move(arrow[0], arrow[1]);
+        return;
+      }
+
+      // Enter advances a row, Shift+Enter goes back — as it does in a sheet.
+      if (e.key === "Enter") {
+        e.preventDefault();
+        move(e.shiftKey ? -1 : 1, 0);
+      }
+    };
+
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+  }, [move]);
 
-  // Touch/swipe support
   const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -139,64 +223,46 @@ export default function Spreadsheet() {
 
   const handleTouchEnd = useCallback(
     (e: React.TouchEvent) => {
-      if (!touchStart.current || !introComplete) return;
+      if (!touchStart.current) return;
 
       const touch = e.changedTouches[0];
       const dx = touch.clientX - touchStart.current.x;
       const dy = touch.clientY - touchStart.current.y;
       const threshold = 30;
-
-      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > threshold) {
-        setCursor((prev) => ({
-          ...prev,
-          col: Math.max(0, prev.col + (dx > 0 ? -1 : 1)),
-        }));
-      } else if (Math.abs(dy) > threshold) {
-        setCursor((prev) => ({
-          ...prev,
-          row: Math.max(0, prev.row + (dy > 0 ? -1 : 1)),
-        }));
-      }
-
       touchStart.current = null;
+
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (Math.abs(dx) > threshold) move(0, dx > 0 ? -1 : 1);
+      } else if (Math.abs(dy) > threshold) {
+        move(dy > 0 ? -1 : 1, 0);
+      }
     },
-    [introComplete]
+    [move]
   );
 
-  // Render content cells
-  const contentCells = Object.entries(CELLS).map(([key, data]) => {
-    const [row, col] = key.split(",").map(Number);
-    const pos = getCellPixelPosition(row, col);
-    const dims = getCellDimensions(row, col);
+  const cursorPos = getCellPixelPosition(cursor.row, cursor.col);
+  const cursorDims = getCellDimensions(cursor.row, cursor.col);
+  const cursorSpan = getCellSpan(CELLS[cellKey(cursor.row, cursor.col)]);
 
-    return (
-      <motion.div
-        key={key}
-        className="absolute flex items-center"
-        style={{
-          left: pos.x + GRID_PADDING_X,
-          top: pos.y + GRID_PADDING_Y,
-          width: dims.width,
-          height: dims.height,
-          paddingLeft: 6,
-          paddingRight: 6,
-          whiteSpace: data.width ? "normal" : "nowrap",
-        }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.8, delay: 0.3 }}
-      >
-        {data.html ? (
-          <span
-            className={data.className}
-            dangerouslySetInnerHTML={{ __html: data.content }}
-          />
-        ) : (
-          <span className={data.className}>{data.content}</span>
-        )}
-      </motion.div>
-    );
-  });
+  // Only the labels in view need rendering; the range shifts as you pan.
+  const firstCol = Math.max(0, Math.floor(-pan.x / CELL_WIDTH));
+  const firstRow = Math.max(0, Math.floor(-pan.y / CELL_HEIGHT));
+
+  const colIndices = useMemo(
+    () => Array.from({ length: HEADER_COLS }, (_, i) => firstCol + i),
+    [firstCol]
+  );
+  const rowIndices = useMemo(
+    () => Array.from({ length: HEADER_ROWS }, (_, i) => firstRow + i),
+    [firstRow]
+  );
+
+  const contentCells = useMemo(() => renderContentCells(origin), [origin]);
+
+  const isColActive = (col: number) =>
+    col >= cursor.col && col < cursor.col + cursorSpan.cols;
+  const isRowActive = (row: number) =>
+    row >= cursor.row && row < cursor.row + cursorSpan.rows;
 
   return (
     <div
@@ -206,129 +272,186 @@ export default function Spreadsheet() {
       onTouchEnd={handleTouchEnd}
       tabIndex={0}
       role="application"
-      aria-label="Interactive spreadsheet navigation. Use arrow keys to move the selection cursor."
+      aria-label="Interactive spreadsheet. Use arrow keys to move the selection."
     >
-      <motion.div
-        className="absolute inset-0"
-        style={{ x: smoothPanX, y: smoothPanY }}
+      {/* Gridlines — one element, tiled from the origin outward. */}
+      <div
+        className="grid-lines absolute"
+        style={{
+          left: origin.x,
+          top: origin.y,
+          right: 0,
+          bottom: 0,
+          backgroundSize: `${CELL_WIDTH}px ${CELL_HEIGHT}px`,
+          backgroundPosition: `${pan.x}px ${pan.y}px`,
+          transition: glide("background-position"),
+        }}
+      />
+
+      {/* Corner box: the current cell reference. */}
+      <div
+        className="absolute flex items-center justify-end text-[10px] tabular-nums text-black/45"
+        style={{
+          left: origin.x - ROW_HEADER_WIDTH,
+          top: origin.y - COL_HEADER_HEIGHT,
+          width: ROW_HEADER_WIDTH,
+          height: COL_HEADER_HEIGHT,
+          paddingRight: CELL_PADDING_X + 2,
+        }}
+        aria-hidden
       >
-        {/* Thin divider line below the title */}
-        <motion.div
-          className="absolute bg-black/10"
-          style={{
-            left: GRID_PADDING_X + 4,
-            top: dividerY + GRID_PADDING_Y,
-            height: 1,
-            width: CELL_WIDTH * TITLE_COL_SPAN - 8,
-            transformOrigin: "left",
-          }}
-          initial={{ opacity: 0, scaleX: 0 }}
-          animate={{ opacity: 1, scaleX: 1 }}
-          transition={{ duration: 0.6, delay: 0.6, ease: "easeOut" }}
-        />
-
-        {/* Content cells */}
-        {contentCells}
-
-        {/* Selection cursor */}
-        <AnimatePresence>
-          {showCursor && (
-            <motion.div
-              className="absolute pointer-events-none"
-              style={{
-                x: cursorX,
-                y: cursorY,
-                width: cursorW,
-                height: cursorH,
-              }}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.4, delay: 0.2 }}
-            >
-              {/* Outer border */}
-              <div
-                className="absolute inset-0 rounded-[1px]"
-                style={{
-                  border: "2px solid rgb(26, 115, 232)",
-                  boxShadow: "0 0 0 1px rgba(26, 115, 232, 0.1)",
-                }}
-              />
-              {/* Corner handle (bottom-right) */}
-              <div
-                className="absolute -bottom-[3px] -right-[3px] w-[6px] h-[6px] rounded-[1px]"
-                style={{ backgroundColor: "rgb(26, 115, 232)" }}
-              />
-              {/* Subtle fill */}
-              <div
-                className="absolute inset-0"
-                style={{ backgroundColor: "rgba(26, 115, 232, 0.04)" }}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-
-      {/* Mobile arrow controls */}
-      <div className="fixed bottom-8 right-8 md:hidden">
-        <MobileControls
-          onMove={(dr, dc) => {
-            if (!introComplete) return;
-            setCursor((prev) => ({
-              row: Math.max(0, prev.row + dr),
-              col: Math.max(0, prev.col + dc),
-            }));
-          }}
-        />
+        {cellLabel(cursor)}
       </div>
 
-      {/* Keyboard hint — fades away */}
-      <AnimatePresence>
-        {introComplete && (
-          <motion.div
-            className="fixed bottom-8 left-1/2 -translate-x-1/2 hidden md:flex items-center gap-1.5 text-[11px] text-black/25 tracking-wide"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.6, delay: 0.5 }}
+      {/* Column headers — frozen vertically, panning with the grid. */}
+      <div
+        className="absolute overflow-hidden"
+        style={{
+          left: origin.x,
+          top: origin.y - COL_HEADER_HEIGHT,
+          right: 0,
+          height: COL_HEADER_HEIGHT,
+        }}
+        aria-hidden
+      >
+        <div
+          className="absolute inset-0"
+          style={{
+            transform: `translate3d(${pan.x}px, 0, 0)`,
+            transition: glide("transform"),
+          }}
+        >
+          {colIndices.map((col) => (
+            <div
+              key={col}
+              className="absolute flex items-center justify-center text-[10px]"
+              style={{
+                left: col * CELL_WIDTH,
+                width: CELL_WIDTH,
+                height: COL_HEADER_HEIGHT,
+                color: isColActive(col) ? ACCENT : "rgba(0,0,0,0.28)",
+              }}
+            >
+              {columnLabel(col)}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Row headers — frozen horizontally, panning with the grid. */}
+      <div
+        className="absolute overflow-hidden"
+        style={{
+          left: origin.x - ROW_HEADER_WIDTH,
+          top: origin.y,
+          width: ROW_HEADER_WIDTH,
+          bottom: 0,
+        }}
+        aria-hidden
+      >
+        <div
+          className="absolute inset-0"
+          style={{
+            transform: `translate3d(0, ${pan.y}px, 0)`,
+            transition: glide("transform"),
+          }}
+        >
+          {rowIndices.map((row) => (
+            <div
+              key={row}
+              className="absolute flex items-center justify-end text-[10px] tabular-nums"
+              style={{
+                top: row * CELL_HEIGHT,
+                width: ROW_HEADER_WIDTH,
+                height: CELL_HEIGHT,
+                paddingRight: CELL_PADDING_X + 2,
+                color: isRowActive(row) ? ACCENT : "rgba(0,0,0,0.28)",
+              }}
+            >
+              {row + 1}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Cells and selection share the panned layer so they never drift apart. */}
+      <div
+        className="absolute inset-0"
+        style={{
+          transform: `translate3d(${pan.x}px, ${pan.y}px, 0)`,
+          transition: glide("transform"),
+        }}
+      >
+        {contentCells}
+
+        <div
+          className="fade-in absolute pointer-events-none"
+          style={{
+            width: cursorDims.width,
+            height: cursorDims.height,
+            transform: `translate3d(${origin.x + cursorPos.x}px, ${
+              origin.y + cursorPos.y
+            }px, 0)`,
+            transition: glide("transform"),
+            border: `2px solid ${ACCENT}`,
+            backgroundColor: "rgba(26, 115, 232, 0.04)",
+            animationDelay: "200ms",
+          }}
+        >
+          {/* Fill handle, as on a real selection. */}
+          <div
+            className="absolute -bottom-[3px] -right-[3px] h-[6px] w-[6px]"
+            style={{ backgroundColor: ACCENT }}
+          />
+        </div>
+      </div>
+
+      <div aria-live="polite" className="sr-only">
+        {`Cell ${cellLabel(cursor)}`}
+      </div>
+
+      {/* Mobile controls, aligned to the grid's right edge. */}
+      <div className="fixed bottom-10 right-10 md:hidden">
+        <MobileControls onMove={move} />
+      </div>
+
+      {/* Keyboard hint, snapped to the grid origin and lifted off the lines. */}
+      <div
+        className="fade-in fixed bottom-10 hidden items-center gap-1.5 bg-white pr-3 text-[11px] tracking-wide text-black/30 md:flex"
+        style={{ left: origin.x, animationDelay: "1.9s" }}
+      >
+        {["↑", "↓", "←", "→"].map((key) => (
+          <kbd
+            key={key}
+            className="rounded-[2px] border border-black/10 px-1.5 py-0.5 text-[10px]"
           >
-            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
-              ↑
-            </kbd>
-            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
-              ↓
-            </kbd>
-            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
-              ←
-            </kbd>
-            <kbd className="px-1.5 py-0.5 rounded border border-black/10 text-[10px]">
-              →
-            </kbd>
-            <span className="ml-1">to navigate</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            {key}
+          </kbd>
+        ))}
+        <span className="ml-1">to navigate</span>
+      </div>
     </div>
   );
 }
 
-function MobileControls({ onMove }: { onMove: (dr: number, dc: number) => void }) {
-  const btnClass =
-    "w-10 h-10 flex items-center justify-center rounded-lg bg-black/5 active:bg-black/10 text-black/40 text-sm transition-colors";
+function MobileControls({ onMove }: { onMove: (dRow: number, dCol: number) => void }) {
+  const button =
+    "flex h-10 w-10 items-center justify-center rounded-[2px] border border-black/10 bg-white text-sm text-black/40 active:bg-black/5";
 
   return (
     <div className="grid grid-cols-3 gap-1">
       <div />
-      <button className={btnClass} onClick={() => onMove(-1, 0)} aria-label="Move up">
+      <button className={button} onClick={() => onMove(-1, 0)} aria-label="Move up">
         ↑
       </button>
       <div />
-      <button className={btnClass} onClick={() => onMove(0, -1)} aria-label="Move left">
+      <button className={button} onClick={() => onMove(0, -1)} aria-label="Move left">
         ←
       </button>
-      <button className={btnClass} onClick={() => onMove(1, 0)} aria-label="Move down">
+      <button className={button} onClick={() => onMove(1, 0)} aria-label="Move down">
         ↓
       </button>
-      <button className={btnClass} onClick={() => onMove(0, 1)} aria-label="Move right">
+      <button className={button} onClick={() => onMove(0, 1)} aria-label="Move right">
         →
       </button>
     </div>
