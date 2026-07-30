@@ -3,6 +3,7 @@ export interface CellData {
   className?: string;
   colSpan?: number;
   rowSpan?: number;
+  width?: number;
   html?: boolean;
 }
 
@@ -35,7 +36,7 @@ export const CELLS: Record<string, CellData> = {
     content:
       'Today, July 29, 2026 the website, <a href="https://sawyerlundberg.com" class="text-[#1a73e8] underline">sawyerlundberg.com</a>, is now live. How exciting! I hope this can be a place where I can showcase my work and life in the purest form.',
     className: "text-[13px] text-[#333] tracking-normal",
-    colSpan: 80,
+    width: 850,
     html: true,
   },
 };
@@ -77,15 +78,18 @@ export function getCellDimensions(row: number, col?: number) {
   const cell = key ? CELLS[key] : undefined;
   const colSpan = cell?.colSpan;
   const rowSpan = cell?.rowSpan ?? 1;
+  const explicitWidth = cell?.width;
 
   const isTitle = row === 1;
   const baseHeight = isTitle ? TITLE_ROW_HEIGHT : CELL_HEIGHT;
   return {
-    width: colSpan
-      ? CELL_WIDTH * colSpan
-      : isTitle
-        ? CELL_WIDTH * TITLE_COL_SPAN
-        : CELL_WIDTH,
+    width: explicitWidth
+      ? explicitWidth
+      : colSpan
+        ? CELL_WIDTH * colSpan
+        : isTitle
+          ? CELL_WIDTH * TITLE_COL_SPAN
+          : CELL_WIDTH,
     height: baseHeight + (rowSpan - 1) * CELL_HEIGHT,
   };
 }
