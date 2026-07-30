@@ -27,17 +27,13 @@ export const CELL_HEIGHT = 28;
 /** Inset of cell text from its left gridline, matching a real sheet. */
 export const CELL_PADDING_X = 6;
 
-/** Frozen header gutters, drawn in the margin outside the grid. */
-export const ROW_HEADER_WIDTH = 40;
-export const COL_HEADER_HEIGHT = 22;
-
 /**
- * Where cell (0,0) sits on screen. Narrow screens pull the grid tight against
- * the header gutters — an 80px margin costs a third of a phone's width.
+ * Where cell (0,0) sits on screen — pure margin, since the grid itself is
+ * never drawn. Narrow screens pull it in; 80px costs a fifth of a phone.
  */
 const COMPACT_BREAKPOINT = 640;
 const ORIGIN = { x: 80, y: 80 };
-const COMPACT_ORIGIN = { x: ROW_HEADER_WIDTH, y: COL_HEADER_HEIGHT + 16 };
+const COMPACT_ORIGIN = { x: 20, y: 40 };
 
 export function getGridOrigin(viewportWidth: number) {
   return viewportWidth < COMPACT_BREAKPOINT ? COMPACT_ORIGIN : ORIGIN;
@@ -84,7 +80,7 @@ export function cellKey(row: number, col: number): string {
   return `${row},${col}`;
 }
 
-export function getCellSpan(cell: CellData | undefined) {
+function getCellSpan(cell: CellData | undefined) {
   return { cols: cell?.colSpan ?? 1, rows: cell?.rowSpan ?? 1 };
 }
 
@@ -144,8 +140,8 @@ export function moveCursor(
   return from;
 }
 
-/** 0 -> "A", 25 -> "Z", 26 -> "AA". */
-export function columnLabel(index: number): string {
+/** 0 -> "A", 25 -> "Z", 26 -> "AA". Announced to screen readers only. */
+function columnLabel(index: number): string {
   let label = "";
   for (let n = index; n >= 0; n = Math.floor(n / 26) - 1) {
     label = String.fromCharCode(65 + (n % 26)) + label;

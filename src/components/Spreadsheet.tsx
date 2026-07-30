@@ -3,37 +3,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CELLS,
-  CELL_HEIGHT,
   CELL_PADDING_X,
-  CELL_WIDTH,
-  COL_HEADER_HEIGHT,
   INITIAL_POSITION,
   INTRO_TARGET,
-  ROW_HEADER_WIDTH,
   type CellPosition,
-  cellKey,
   cellLabel,
-  columnLabel,
   getCellDimensions,
   getCellPixelPosition,
-  getCellSpan,
   getGridOrigin,
   moveCursor,
 } from "@/lib/grid";
 
-/** Selection blue, matching a spreadsheet's active-cell chrome. */
-const ACCENT = "#1a73e8";
-
-/** Everything that moves shares one easing so the grid stays locked together. */
+/**
+ * The grid is never drawn. The cursor is the only thing that reveals it, so it
+ * glides rather than snaps — the movement between cells is the whole tell.
+ */
 const EASING = "cubic-bezier(0.2, 0, 0, 1)";
-const DURATION = 90;
+const DURATION = 200;
 
 /** Breathing room kept between the cursor and the viewport edge when panning. */
 const EDGE_MARGIN = 40;
-
-/** Header labels rendered per axis — enough to cover a 4K display. */
-const HEADER_COLS = 33;
-const HEADER_ROWS = 78;
 
 /** The cursor drifts to a second cell shortly after load, unless you move first. */
 const INTRO_MOVE_DELAY = 1400;
@@ -134,7 +123,6 @@ export default function Spreadsheet() {
   });
   const [viewport, setViewport] = useState<Size | null>(null);
 
-  const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<Size | null>(null);
   const userMoved = useRef(false);
 
@@ -171,27 +159,28 @@ export default function Spreadsheet() {
     return () => clearTimeout(timer);
   }, [select]);
 
-  // Measure the container rather than the window, and only ever with a real
-  // laid-out size — clamping against a 0x0 rect would strand the pan off-grid.
+  // The grid fills a fixed inset-0 box, so the window *is* the viewport.
+  // Reading it directly avoids depending on element layout having settled —
+  // measuring the container yielded a 0x0 rect and stranded the pan off-grid.
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const measure = () => {
+      const size = { width: window.innerWidth, height: window.innerHeight };
+      if (size.width <= 0 || size.height <= 0) return;
 
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      if (width <= 0 || height <= 0) return;
+      const prev = viewportRef.current;
+      if (prev && prev.width === size.width && prev.height === size.height) return;
 
-      const size = { width, height };
       viewportRef.current = size;
       setViewport(size);
-      setView((prev) => {
-        const pan = settlePan(prev.cursor, prev.pan, size);
-        return pan === prev.pan ? prev : { ...prev, pan };
+      setView((view) => {
+        const pan = settlePan(view.cursor, view.pan, size);
+        return pan === view.pan ? view : { ...view, pan };
       });
-    });
+    };
 
-    observer.observe(container);
-    return () => observer.disconnect();
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
   }, []);
 
   useEffect(() => {
@@ -242,31 +231,14 @@ export default function Spreadsheet() {
 
   const cursorPos = getCellPixelPosition(cursor.row, cursor.col);
   const cursorDims = getCellDimensions(cursor.row, cursor.col);
-  const cursorSpan = getCellSpan(CELLS[cellKey(cursor.row, cursor.col)]);
-
-  // Only the labels in view need rendering; the range shifts as you pan.
-  const firstCol = Math.max(0, Math.floor(-pan.x / CELL_WIDTH));
-  const firstRow = Math.max(0, Math.floor(-pan.y / CELL_HEIGHT));
-
-  const colIndices = useMemo(
-    () => Array.from({ length: HEADER_COLS }, (_, i) => firstCol + i),
-    [firstCol]
-  );
-  const rowIndices = useMemo(
-    () => Array.from({ length: HEADER_ROWS }, (_, i) => firstRow + i),
-    [firstRow]
-  );
-
   const contentCells = useMemo(() => renderContentCells(origin), [origin]);
 
-  const isColActive = (col: number) =>
-    col >= cursor.col && col < cursor.col + cursorSpan.cols;
-  const isRowActive = (row: number) =>
-    row >= cursor.row && row < cursor.row + cursorSpan.rows;
+  // Everything on the page shares one left edge — the hint included.
+  const contentLeft =
+    origin.x + getCellPixelPosition(0, INITIAL_POSITION.col).x + CELL_PADDING_X;
 
   return (
     <div
-      ref={containerRef}
       className="fixed inset-0 overflow-hidden bg-white"
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
@@ -274,107 +246,7 @@ export default function Spreadsheet() {
       role="application"
       aria-label="Interactive spreadsheet. Use arrow keys to move the selection."
     >
-      {/* Gridlines — one element, tiled from the origin outward. */}
-      <div
-        className="grid-lines absolute"
-        style={{
-          left: origin.x,
-          top: origin.y,
-          right: 0,
-          bottom: 0,
-          backgroundSize: `${CELL_WIDTH}px ${CELL_HEIGHT}px`,
-          backgroundPosition: `${pan.x}px ${pan.y}px`,
-          transition: glide("background-position"),
-        }}
-      />
-
-      {/* Corner box: the current cell reference. */}
-      <div
-        className="absolute flex items-center justify-end text-[10px] tabular-nums text-black/45"
-        style={{
-          left: origin.x - ROW_HEADER_WIDTH,
-          top: origin.y - COL_HEADER_HEIGHT,
-          width: ROW_HEADER_WIDTH,
-          height: COL_HEADER_HEIGHT,
-          paddingRight: CELL_PADDING_X + 2,
-        }}
-        aria-hidden
-      >
-        {cellLabel(cursor)}
-      </div>
-
-      {/* Column headers — frozen vertically, panning with the grid. */}
-      <div
-        className="absolute overflow-hidden"
-        style={{
-          left: origin.x,
-          top: origin.y - COL_HEADER_HEIGHT,
-          right: 0,
-          height: COL_HEADER_HEIGHT,
-        }}
-        aria-hidden
-      >
-        <div
-          className="absolute inset-0"
-          style={{
-            transform: `translate3d(${pan.x}px, 0, 0)`,
-            transition: glide("transform"),
-          }}
-        >
-          {colIndices.map((col) => (
-            <div
-              key={col}
-              className="absolute flex items-center justify-center text-[10px]"
-              style={{
-                left: col * CELL_WIDTH,
-                width: CELL_WIDTH,
-                height: COL_HEADER_HEIGHT,
-                color: isColActive(col) ? ACCENT : "rgba(0,0,0,0.28)",
-              }}
-            >
-              {columnLabel(col)}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Row headers — frozen horizontally, panning with the grid. */}
-      <div
-        className="absolute overflow-hidden"
-        style={{
-          left: origin.x - ROW_HEADER_WIDTH,
-          top: origin.y,
-          width: ROW_HEADER_WIDTH,
-          bottom: 0,
-        }}
-        aria-hidden
-      >
-        <div
-          className="absolute inset-0"
-          style={{
-            transform: `translate3d(0, ${pan.y}px, 0)`,
-            transition: glide("transform"),
-          }}
-        >
-          {rowIndices.map((row) => (
-            <div
-              key={row}
-              className="absolute flex items-center justify-end text-[10px] tabular-nums"
-              style={{
-                top: row * CELL_HEIGHT,
-                width: ROW_HEADER_WIDTH,
-                height: CELL_HEIGHT,
-                paddingRight: CELL_PADDING_X + 2,
-                color: isRowActive(row) ? ACCENT : "rgba(0,0,0,0.28)",
-              }}
-            >
-              {row + 1}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Cells and selection share the panned layer so they never drift apart. */}
+      {/* Cells and cursor share the panned layer so they never drift apart. */}
       <div
         className="absolute inset-0"
         style={{
@@ -384,8 +256,9 @@ export default function Spreadsheet() {
       >
         {contentCells}
 
+        {/* The only thing that ever reveals the grid. */}
         <div
-          className="fade-in absolute pointer-events-none"
+          className="fade-in absolute pointer-events-none rounded-[3px]"
           style={{
             width: cursorDims.width,
             height: cursorDims.height,
@@ -393,42 +266,32 @@ export default function Spreadsheet() {
               origin.y + cursorPos.y
             }px, 0)`,
             transition: glide("transform"),
-            border: `2px solid ${ACCENT}`,
-            backgroundColor: "rgba(26, 115, 232, 0.04)",
+            border: "1px solid rgba(0, 0, 0, 0.55)",
+            backgroundColor: "rgba(0, 0, 0, 0.015)",
             animationDelay: "200ms",
           }}
-        >
-          {/* Fill handle, as on a real selection. */}
-          <div
-            className="absolute -bottom-[3px] -right-[3px] h-[6px] w-[6px]"
-            style={{ backgroundColor: ACCENT }}
-          />
-        </div>
+        />
       </div>
 
       <div aria-live="polite" className="sr-only">
         {`Cell ${cellLabel(cursor)}`}
       </div>
 
-      {/* Mobile controls, aligned to the grid's right edge. */}
-      <div className="fixed bottom-10 right-10 md:hidden">
+      {/* Touch fallback for the arrow keys. Quiet enough to read as nothing. */}
+      <div className="fixed bottom-8 right-6 md:hidden">
         <MobileControls onMove={move} />
       </div>
 
-      {/* Keyboard hint, snapped to the grid origin and lifted off the lines. */}
+      {/*
+        The one hint that the page is navigable. Without it the signature
+        interaction is undiscoverable, so it stays — as text, not as chrome.
+      */}
       <div
-        className="fade-in fixed bottom-10 hidden items-center gap-1.5 bg-white pr-3 text-[11px] tracking-wide text-black/30 md:flex"
-        style={{ left: origin.x, animationDelay: "1.9s" }}
+        className="fade-in fixed bottom-10 hidden items-center gap-2 text-[11px] text-black/25 md:flex"
+        style={{ left: contentLeft, animationDelay: "2.2s" }}
       >
-        {["↑", "↓", "←", "→"].map((key) => (
-          <kbd
-            key={key}
-            className="rounded-[2px] border border-black/10 px-1.5 py-0.5 text-[10px]"
-          >
-            {key}
-          </kbd>
-        ))}
-        <span className="ml-1">to navigate</span>
+        <span className="tracking-[0.25em]">↑↓←→</span>
+        <span>to navigate</span>
       </div>
     </div>
   );
@@ -436,7 +299,7 @@ export default function Spreadsheet() {
 
 function MobileControls({ onMove }: { onMove: (dRow: number, dCol: number) => void }) {
   const button =
-    "flex h-10 w-10 items-center justify-center rounded-[2px] border border-black/10 bg-white text-sm text-black/40 active:bg-black/5";
+    "flex h-11 w-11 items-center justify-center text-sm text-black/20 active:text-black/50";
 
   return (
     <div className="grid grid-cols-3 gap-1">

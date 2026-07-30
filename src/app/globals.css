@@ -25,34 +25,6 @@ body {
   -webkit-user-select: none;
 }
 
-/*
- * Gridlines as a single repeating background: one element, no DOM per line,
- * and the browser rasterises it at device resolution so it stays crisp.
- */
-.grid-lines {
-  --grid-line: #e6e6e6;
-  --grid-line-width: 1px;
-  background-image:
-    linear-gradient(
-      to right,
-      var(--grid-line) 0 var(--grid-line-width),
-      transparent var(--grid-line-width)
-    ),
-    linear-gradient(
-      to bottom,
-      var(--grid-line) 0 var(--grid-line-width),
-      transparent var(--grid-line-width)
-    );
-}
-
-/* On high-DPI screens draw a true hairline — exactly one device pixel. */
-@media (min-resolution: 2dppx), (-webkit-min-device-pixel-ratio: 2) {
-  .grid-lines {
-    --grid-line: #dcdcdc;
-    --grid-line-width: 0.5px;
-  }
-}
-
 @keyframes fade-in {
   from {
     opacity: 0;
